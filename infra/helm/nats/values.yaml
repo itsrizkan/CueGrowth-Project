@@ -1,0 +1,60 @@
+config:
+  jetstream:
+    enabled: true
+    fileStore:
+      pvc:
+        size: 5Gi
+        storageClassName: standard
+    memStore:
+      enabled: true
+      maxSize: 2Gi
+  
+  cluster:
+    enabled: false
+    replicas: 1
+
+container:
+  image:
+    repository: nats
+    tag: 2.10.7-alpine
+
+  env:
+    NATS_USER: cuegrowth
+    NATS_PASSWORD: NatsSecurePass123!
+
+podTemplate:
+  topologySpreadConstraints: []
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+
+natsBox:
+  enabled: true
+
+service:
+  enabled: true
+  ports:
+    client:
+      port: 4222
+    monitoring:
+      port: 8222
+
+promExporter:
+  enabled: true
+  port: 7777
