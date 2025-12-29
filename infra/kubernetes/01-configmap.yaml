@@ -5,7 +5,7 @@ metadata:
   namespace: cuegrowth
 data:
   # NATS Configuration
-  NATS_URL: "nats://nats:4222"
+  NATS_URL: "nats://nats.cuegrowth.svc.cluster.local:4222"
   NATS_USER: "cuegrowth"
   
   # Valkey/Redis Configuration

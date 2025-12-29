@@ -25,7 +25,7 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          name: kube-system
+          kubernetes.io/metadata.name: kube-system
     ports:
     - protocol: UDP
       port: 53
@@ -150,10 +150,10 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          name: kube-system
+          kubernetes.io/metadata.name: kube-system
     ports:
-    - protocol: UDP
-      port: 53
+      - protocol: UDP
+        port: 53
 
 ---
 # Worker Egress - Can talk to NATS and Valkey
@@ -189,10 +189,10 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          name: kube-system
+          kubernetes.io/metadata.name: kube-system
     ports:
-    - protocol: UDP
-      port: 53
+      - protocol: UDP
+        port: 53
 
 ---
 # Allow Ingress to API Gateway (from outside cluster)
