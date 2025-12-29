@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cuegrowth
+  labels:
+    name: cuegrowth
+    environment: production

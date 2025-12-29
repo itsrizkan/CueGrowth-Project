@@ -1,0 +1,231 @@
+# Valkey Master (Primary node)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-master
+  namespace: cuegrowth
+  labels:
+    app: valkey
+    role: master
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  selector:
+    app: valkey
+    role: master
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-master
+  namespace: cuegrowth
+spec:
+  serviceName: valkey-master
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+      role: master
+  template:
+    metadata:
+      labels:
+        app: valkey
+        role: master
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+      containers:
+      - name: valkey
+        image: valkey/valkey:7.2-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        env:
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: valkey-secret
+              key: password
+        command:
+        - valkey-server
+        args:
+        - --requirepass
+        - $(VALKEY_PASSWORD)
+        - --appendonly
+        - "yes"
+        - --save
+        - "900 1"
+        - --save
+        - "300 10"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - valkey-cli -a ${VALKEY_PASSWORD} ping | grep PONG
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+
+---
+# Valkey Replica Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-replica
+  namespace: cuegrowth
+  labels:
+    app: valkey
+    role: replica
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  selector:
+    app: valkey
+    role: replica
+
+---
+# Valkey Replicas
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-replica
+  namespace: cuegrowth
+spec:
+  serviceName: valkey-replica
+  replicas: 2
+  selector:
+    matchLabels:
+      app: valkey
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: valkey
+        role: replica
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+      containers:
+      - name: valkey
+        image: valkey/valkey:7.2-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        env:
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: valkey-secret
+              key: password
+        - name: VALKEY_MASTER_HOST
+          value: "valkey-master"
+        command:
+        - valkey-server
+        args:
+        - --requirepass
+        - $(VALKEY_PASSWORD)
+        - --replicaof
+        - $(VALKEY_MASTER_HOST)
+        - "6379"
+        - --masterauth
+        - $(VALKEY_PASSWORD)
+        - --appendonly
+        - "yes"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - valkey-cli -a ${VALKEY_PASSWORD} ping | grep PONG
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+
+---
+# ServiceMonitor for Prometheus (if using Prometheus Operator)
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-metrics
+  namespace: cuegrowth
+  labels:
+    app: valkey
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9121
+    targetPort: 9121
+    name: metrics
+  selector:
+    app: valkey
