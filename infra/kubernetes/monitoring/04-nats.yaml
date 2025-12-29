@@ -1,0 +1,149 @@
+# NATS ConfigMap for server configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  namespace: cuegrowth
+data:
+  nats.conf: |
+    port: 4222
+    http: 8222
+    
+    # JetStream for message persistence
+    jetstream {
+      store_dir: /data/jetstream
+      max_mem: 1G
+      max_file: 10G
+    }
+    
+    # Authentication
+    authorization {
+      users = [
+        {user: "cuegrowth", password: "nats-secret-password"}
+      ]
+    }
+    
+    # Monitoring
+    server_name: nats-server
+
+---
+# NATS Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: cuegrowth
+  labels:
+    app: nats
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4222
+    targetPort: 4222
+    name: client
+  - port: 8222
+    targetPort: 8222
+    name: monitoring
+  - port: 6222
+    targetPort: 6222
+    name: cluster
+  selector:
+    app: nats
+
+---
+# NATS StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: cuegrowth
+spec:
+  serviceName: nats
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+      containers:
+      - name: nats
+        image: nats:2.10-alpine
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 8222
+          name: monitoring
+        - containerPort: 6222
+          name: cluster
+        command:
+        - nats-server
+        - --config
+        - /etc/nats/nats.conf
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8222
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8222
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nats
+        - name: data
+          mountPath: /data
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: config
+        configMap:
+          name: nats-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# NATS Monitoring Service for Prometheus
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-metrics
+  namespace: cuegrowth
+  labels:
+    app: nats
+spec:
+  type: ClusterIP
+  ports:
+  - port: 7777
+    targetPort: 7777
+    name: metrics
+  selector:
+    app: nats
