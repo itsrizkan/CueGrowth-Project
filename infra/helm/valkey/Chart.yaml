@@ -1,6 +1,0 @@
-apiVersion: v2
-name: valkey
-description: A Helm chart for Valkey (Redis-compatible) with HA
-type: application
-version: 0.1.0
-appVersion: "7.2"
