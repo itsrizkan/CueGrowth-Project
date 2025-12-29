@@ -1,281 +1,199 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from prometheus_client import Counter, Histogram, generate_latest
+from fastapi.responses import Response
 import nats
-from nats.errors import TimeoutError as NatsTimeoutError
 import redis
 import os
 import json
-from prometheus_client import Counter, Gauge, Histogram, make_asgi_app
 import logging
 import asyncio
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="CueGrowth API Gateway",
-    description="Task submission and statistics API",
-    version="1.0.0"
-)
+app = FastAPI(title="CueGrowth API Gateway")
 
 # Prometheus metrics
-tasks_created = Counter('api_tasks_created_total', 'Total tasks created')
-api_requests = Counter('api_requests_total', 'Total API requests', ['endpoint', 'method', 'status'])
-api_latency = Histogram('api_request_duration_seconds', 'API request latency', ['endpoint'])
-queue_backlog = Gauge('api_queue_backlog', 'Current queue backlog')
-valkey_keys = Gauge('api_valkey_keys_total', 'Total keys in Valkey')
-
-# Configuration from environment
-NATS_URL = os.getenv('NATS_URL', 'nats://nats:4222')
-NATS_USER = os.getenv('NATS_USER', 'cuegrowth')
-NATS_PASS = os.getenv('NATS_PASS', 'NatsSecurePass123!')
-VALKEY_HOST = os.getenv('VALKEY_HOST', 'valkey')
-VALKEY_PORT = int(os.getenv('VALKEY_PORT', '6379'))
-VALKEY_PASS = os.getenv('VALKEY_PASS', 'ValkeySecurePass123!')
+request_counter = Counter('api_requests_total', 'Total API requests', ['endpoint', 'method'])
+request_duration = Histogram('api_request_duration_seconds', 'Request duration', ['endpoint'])
+task_published = Counter('tasks_published_total', 'Total tasks published to queue')
 
 # Global connections
 nc = None
-js = None
 redis_client = None
 
 class TaskPayload(BaseModel):
-    task_type: str
+    """Model for task submission"""
+    task_id: str
     data: dict
-    priority: int = 0
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "task_type": "data_processing",
-                "data": {"key": "value", "items": [1, 2, 3]},
-                "priority": 0
-            }
-        }
 
 @app.on_event("startup")
-async def startup():
-    global nc, js, redis_client
-    logger.info("Starting API Gateway...")
+async def startup_event():
+    """Initialize connections on startup"""
+    global nc, redis_client
+    
+    # Get configuration from environment variables
+    nats_url = os.getenv("NATS_URL", "nats://nats:4222")
+    nats_user = os.getenv("NATS_USER", "")
+    nats_password = os.getenv("NATS_PASSWORD", "")
+    
+    redis_host = os.getenv("REDIS_HOST", "valkey-master")
+    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+    redis_password = os.getenv("REDIS_PASSWORD", "")
     
     try:
         # Connect to NATS
-        logger.info(f"Connecting to NATS at {NATS_URL}")
-        nc = await nats.connect(
-            servers=[NATS_URL],
-            user=NATS_USER,
-            password=NATS_PASS,
-            max_reconnect_attempts=-1,
-            reconnect_time_wait=2
-        )
-        js = nc.jetstream()
+        if nats_user and nats_password:
+            nc = await nats.connect(nats_url, user=nats_user, password=nats_password)
+        else:
+            nc = await nats.connect(nats_url)
+        logger.info(f"Connected to NATS at {nats_url}")
         
-        # Ensure JetStream stream exists
-        try:
-            await js.stream_info("TASKS")
-            logger.info("JetStream stream 'TASKS' already exists")
-        except:
-            logger.info("Creating JetStream stream 'TASKS'")
-            await js.add_stream(
-                name="TASKS",
-                subjects=["tasks.>"],
-                retention="limits",
-                max_msgs=100000,
-                max_bytes=1024*1024*1024,  # 1GB
-                storage="file"
-            )
-        
-        logger.info("Connected to NATS successfully")
-        
-        # Connect to Redis/Valkey
-        logger.info(f"Connecting to Valkey at {VALKEY_HOST}:{VALKEY_PORT}")
+        # Connect to Valkey/Redis
         redis_client = redis.Redis(
-            host=VALKEY_HOST,
-            port=VALKEY_PORT,
-            password=VALKEY_PASS,
+            host=redis_host,
+            port=redis_port,
+            password=redis_password,
             decode_responses=True,
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            retry_on_timeout=True
+            socket_connect_timeout=5
         )
-        
         # Test connection
         redis_client.ping()
-        logger.info("Connected to Valkey successfully")
+        logger.info(f"Connected to Valkey at {redis_host}:{redis_port}")
         
     except Exception as e:
-        logger.error(f"Startup error: {e}")
+        logger.error(f"Failed to initialize connections: {e}")
         raise
 
 @app.on_event("shutdown")
-async def shutdown():
-    logger.info("Shutting down API Gateway...")
+async def shutdown_event():
+    """Cleanup connections on shutdown"""
+    global nc, redis_client
+    
     if nc:
         await nc.close()
+        logger.info("NATS connection closed")
+    
     if redis_client:
         redis_client.close()
-    logger.info("Shutdown complete")
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "api-gateway",
-        "version": "1.0.0"
-    }
-
-@app.get("/ready")
-async def ready():
-    """Readiness check endpoint"""
-    try:
-        # Check NATS connection
-        if not nc or not nc.is_connected:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="NATS not connected"
-            )
-        
-        # Check Valkey connection
-        redis_client.ping()
-        
-        api_requests.labels(endpoint='/ready', method='GET', status='success').inc()
-        return {
-            "status": "ready",
-            "nats": "connected",
-            "valkey": "connected"
-        }
-    except redis.ConnectionError:
-        api_requests.labels(endpoint='/ready', method='GET', status='error').inc()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Valkey not connected"
-        )
-    except Exception as e:
-        api_requests.labels(endpoint='/ready', method='GET', status='error').inc()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service not ready: {str(e)}"
-        )
-
-@app.post("/task", status_code=status.HTTP_201_CREATED)
-async def create_task(payload: TaskPayload):
-    """Submit a new task to the queue"""
-    with api_latency.labels(endpoint='/task').time():
-        try:
-            message = json.dumps(payload.dict())
-            
-            # Publish to NATS JetStream
-            ack = await js.publish(
-                "tasks.new",
-                message.encode(),
-                timeout=5.0
-            )
-            
-            tasks_created.inc()
-            api_requests.labels(endpoint='/task', method='POST', status='success').inc()
-            
-            logger.info(f"Task created: seq={ack.seq}, type={payload.task_type}")
-            
-            return {
-                "status": "queued",
-                "task_id": f"task-{ack.seq}",
-                "sequence": ack.seq,
-                "stream": ack.stream
-            }
-            
-        except NatsTimeoutError:
-            api_requests.labels(endpoint='/task', method='POST', status='error').inc()
-            logger.error("NATS publish timeout")
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Queue publish timeout"
-            )
-        except Exception as e:
-            api_requests.labels(endpoint='/task', method='POST', status='error').inc()
-            logger.error(f"Task creation error: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create task: {str(e)}"
-            )
-
-@app.get("/stats")
-async def get_stats():
-    """Get system statistics"""
-    with api_latency.labels(endpoint='/stats').time():
-        try:
-            # Get Valkey stats
-            keys_count = redis_client.dbsize()
-            valkey_info = redis_client.info('stats')
-            
-            # Get queue stats
-            try:
-                stream_info = await js.stream_info("TASKS")
-                backlog = stream_info.state.messages
-                queue_backlog.set(backlog)
-            except Exception as e:
-                logger.warning(f"Could not get stream info: {e}")
-                backlog = 0
-            
-            # Get worker processed count
-            try:
-                processed_count = redis_client.get("worker:processed_count")
-                processed = int(processed_count) if processed_count else 0
-            except:
-                processed = 0
-            
-            # Update Prometheus metrics
-            valkey_keys.set(keys_count)
-            
-            api_requests.labels(endpoint='/stats', method='GET', status='success').inc()
-            
-            return {
-                "valkey": {
-                    "keys_count": keys_count,
-                    "total_commands": valkey_info.get('total_commands_processed', 0),
-                    "connected_clients": valkey_info.get('connected_clients', 0)
-                },
-                "queue": {
-                    "backlog_messages": backlog,
-                    "stream": "TASKS"
-                },
-                "workers": {
-                    "processed_count": processed
-                }
-            }
-            
-        except redis.ConnectionError as e:
-            api_requests.labels(endpoint='/stats', method='GET', status='error').inc()
-            logger.error(f"Valkey connection error: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Valkey unavailable"
-            )
-        except Exception as e:
-            api_requests.labels(endpoint='/stats', method='GET', status='error').inc()
-            logger.error(f"Stats error: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get stats: {str(e)}"
-            )
-
-# Mount Prometheus metrics endpoint
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+        logger.info("Redis connection closed")
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
-    return {
-        "service": "CueGrowth API Gateway",
-        "version": "1.0.0",
-        "endpoints": {
-            "POST /task": "Submit a new task",
-            "GET /stats": "Get system statistics",
-            "GET /health": "Health check",
-            "GET /ready": "Readiness check",
-            "GET /metrics": "Prometheus metrics"
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "api-gateway"}
+
+@app.get("/health")
+async def health():
+    """Readiness check - verifies all dependencies"""
+    health_status = {
+        "status": "healthy",
+        "nats": False,
+        "valkey": False
+    }
+    
+    try:
+        # Check NATS connection
+        if nc and nc.is_connected:
+            health_status["nats"] = True
+        
+        # Check Valkey connection
+        if redis_client:
+            redis_client.ping()
+            health_status["valkey"] = True
+        
+        if health_status["nats"] and health_status["valkey"]:
+            return health_status
+        else:
+            raise HTTPException(status_code=503, detail=health_status)
+            
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+
+@app.post("/task")
+async def create_task(task: TaskPayload):
+    """
+    Publish a task to the NATS queue
+    
+    Example payload:
+    {
+        "task_id": "task-123",
+        "data": {
+            "operation": "process",
+            "value": 42
         }
     }
+    """
+    request_counter.labels(endpoint='/task', method='POST').inc()
+    
+    try:
+        # Serialize task to JSON
+        message = json.dumps(task.dict())
+        
+        # Publish to NATS subject "tasks"
+        await nc.publish("tasks", message.encode())
+        
+        task_published.inc()
+        logger.info(f"Task published: {task.task_id}")
+        
+        return {
+            "status": "accepted",
+            "task_id": task.task_id,
+            "message": "Task queued for processing"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to publish task: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
+
+@app.get("/stats")
+async def get_stats():
+    """
+    Get system statistics
+    
+    Returns:
+    - Valkey keys count
+    - Queue backlog (approximated via Redis counter)
+    - Worker processed count
+    """
+    request_counter.labels(endpoint='/stats', method='GET').inc()
+    
+    try:
+        # Get Valkey statistics
+        valkey_keys_count = redis_client.dbsize()
+        
+        # Get processed count from Valkey
+        processed_count = redis_client.get("worker:processed_count")
+        processed_count = int(processed_count) if processed_count else 0
+        
+        # Get queue backlog (stored by worker)
+        queue_backlog = redis_client.get("queue:backlog")
+        queue_backlog = int(queue_backlog) if queue_backlog else 0
+        
+        # Get total tasks published
+        total_published = redis_client.get("api:tasks_published")
+        total_published = int(total_published) if total_published else 0
+        
+        return {
+            "valkey_keys_count": valkey_keys_count,
+            "queue_backlog": queue_backlog,
+            "worker_processed_count": processed_count,
+            "total_tasks_published": total_published,
+            "processing_rate": f"{(processed_count / max(total_published, 1) * 100):.2f}%"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve stats: {str(e)}")
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(content=generate_latest(), media_type="text/plain")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
