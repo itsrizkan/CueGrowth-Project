@@ -1,0 +1,255 @@
+# Prometheus Operator Configuration for CueGrowth
+
+# Prometheus Configuration
+prometheus:
+  prometheusSpec:
+    # Resource limits
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    
+    # Retention period
+    retention: 7d
+    retentionSize: "5GB"
+    
+    # Storage (use emptyDir for Kind, PVC for production)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    
+    # Service Monitor Selector - scrape all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    
+    # Additional scrape configs for our services
+    additionalScrapeConfigs:
+    # Scrape API Gateway
+    - job_name: 'cuegrowth-api'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - cuegrowth
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: api-gateway
+      - source_labels: [__meta_kubernetes_pod_ip]
+        action: replace
+        target_label: __address__
+        replacement: $1:8000
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+      metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'api_.*'
+        action: keep
+    
+    # Scrape Worker
+    - job_name: 'cuegrowth-worker'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - cuegrowth
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: worker
+      - source_labels: [__meta_kubernetes_pod_ip]
+        action: replace
+        target_label: __address__
+        replacement: $1:8001
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+      metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'worker_.*'
+        action: keep
+    
+    # Scrape NATS
+    - job_name: 'cuegrowth-nats'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - cuegrowth
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: nats
+      - source_labels: [__meta_kubernetes_pod_ip]
+        action: replace
+        target_label: __address__
+        replacement: $1:8222
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+
+# Grafana Configuration
+grafana:
+  enabled: true
+  
+  # Admin credentials
+  adminPassword: admin
+  
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Persistence (disable for Kind, enable for production)
+  persistence:
+    enabled: false
+    # For production:
+    # enabled: true
+    # size: 5Gi
+  
+  # Grafana configuration
+  grafana.ini:
+    server:
+      root_url: http://localhost:3000
+    analytics:
+      check_for_updates: false
+    users:
+      allow_sign_up: false
+  
+  # Additional data sources
+  additionalDataSources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: true
+  
+  # Dashboard providers
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+  
+  # Pre-load dashboards
+  dashboards:
+    default:
+      # Kubernetes cluster monitoring
+      kubernetes-cluster:
+        gnetId: 7249
+        revision: 1
+        datasource: Prometheus
+      
+      # Node exporter dashboard
+      node-exporter:
+        gnetId: 1860
+        revision: 27
+        datasource: Prometheus
+      
+      # Prometheus stats
+      prometheus-stats:
+        gnetId: 2
+        revision: 2
+        datasource: Prometheus
+
+# Alertmanager Configuration
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    
+    # Alert retention
+    retention: 120h
+    
+    # Storage
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+# Node Exporter (collects node metrics)
+nodeExporter:
+  enabled: true
+
+# Kube State Metrics (collects K8s object metrics)
+kubeStateMetrics:
+  enabled: true
+
+# Prometheus Operator
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  
+  # Create default rules
+  createCustomResource: true
+
+# Default rules and alerts
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: false  # Not needed for Kind
+    configReloaders: true
+    general: true
+    k8s: true
+    kubeApiserverAvailability: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubeProxy: false  # Not needed for Kind
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeScheduler: false  # Not needed for Kind
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true
+
+# Service Monitors (auto-discovery)
+serviceMonitor:
+  enabled: true

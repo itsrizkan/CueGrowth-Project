@@ -1,0 +1,91 @@
+---
+# ServiceMonitor for API Gateway
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway
+  namespace: cuegrowth
+  labels:
+    app: api-gateway
+    release: prometheus  # Important: must match Prometheus release name
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - cuegrowth
+
+---
+# ServiceMonitor for Worker
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: worker
+  namespace: cuegrowth
+  labels:
+    app: worker
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: worker
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - cuegrowth
+
+---
+# ServiceMonitor for NATS
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nats
+  namespace: cuegrowth
+  labels:
+    app: nats
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: nats
+  endpoints:
+  - port: monitoring
+    path: /metrics
+    interval: 15s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - cuegrowth
+
+---
+# ServiceMonitor for Valkey (using Redis exporter)
+# Note: You'll need to deploy redis-exporter separately
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: valkey
+  namespace: cuegrowth
+  labels:
+    app: valkey
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: valkey-exporter
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+  namespaceSelector:
+    matchNames:
+    - cuegrowth
