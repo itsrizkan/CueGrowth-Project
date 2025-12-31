@@ -32,3 +32,4 @@ spec:
             name: api-gateway
             port:
               number: 8000
+---
