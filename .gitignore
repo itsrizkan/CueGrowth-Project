@@ -1,0 +1,5 @@
+*.tar
+.DS_Store
+*.swp
+*.swo
+*~

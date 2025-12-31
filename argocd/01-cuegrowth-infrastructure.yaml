@@ -1,0 +1,56 @@
+# This deploys infrastructure components (Valkey, NATS, etc.)
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cuegrowth-infrastructure
+  namespace: argocd
+  # Finalizer ensures cascade delete
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  # Project this app belongs to
+  project: default
+  
+  # Source: where the manifests are
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/cuegrowth-devops.git
+    targetRevision: main
+    path: infra/kubernetes
+    
+    # Only include infrastructure files
+    directory:
+      include: |
+        00-namespace.yaml
+        01-configmap.yaml
+        02-secrets.yaml
+        03-valkey.yaml
+        04-nats.yaml
+      recurse: false
+  
+  # Destination: where to deploy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cuegrowth
+  
+  # Sync policy
+  syncPolicy:
+    # Automatically create namespace if it doesn't exist
+    syncOptions:
+    - CreateNamespace=true
+    
+    # Auto-sync: ArgoCD will automatically sync when Git changes
+    automated:
+      prune: true      # Delete resources not in Git
+      selfHeal: true   # Automatically fix drift
+      allowEmpty: false
+    
+    # Retry strategy
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+---

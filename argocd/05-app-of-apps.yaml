@@ -1,0 +1,32 @@
+# "App of Apps" pattern - manages all other applications
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cuegrowth-app-of-apps
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/itsrizkan/CueGrowth-Project.git
+    targetRevision: main
+    path: argocd
+    
+    directory:
+      recurse: false
+      include: |
+        01-*.yaml
+        02-*.yaml
+        03-*.yaml
+        04-*.yaml
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

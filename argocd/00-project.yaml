@@ -1,0 +1,49 @@
+# ArgoCD Project provides RBAC and restrictions
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: cuegrowth
+  namespace: argocd
+spec:
+  description: CueGrowth Microservices Project
+  
+  # Allow deploying to these namespaces
+  destinations:
+  - namespace: cuegrowth
+    server: https://kubernetes.default.svc
+  - namespace: monitoring
+    server: https://kubernetes.default.svc
+  - namespace: argocd
+    server: https://kubernetes.default.svc
+  
+  # Allow these Git repos
+  sourceRepos:
+  - https://github.com/YOUR_USERNAME/cuegrowth-devops.git
+  - https://github.com/*  # Allow any GitHub repo (for testing)
+  
+  # Cluster resource whitelist (what resources can be created)
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  
+  # Namespace resource blacklist (what resources CANNOT be created)
+  namespaceResourceBlacklist: []
+  
+  # Role definitions
+  roles:
+  # Developer role - can sync but not delete
+  - name: developer
+    description: Developer access to cuegrowth project
+    policies:
+    - p, proj:cuegrowth:developer, applications, get, cuegrowth/*, allow
+    - p, proj:cuegrowth:developer, applications, sync, cuegrowth/*, allow
+    groups:
+    - developers
+  
+  # Admin role - full access
+  - name: admin
+    description: Admin access to cuegrowth project
+    policies:
+    - p, proj:cuegrowth:admin, applications, *, cuegrowth/*, allow
+    groups:
+    - admins

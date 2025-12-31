@@ -1,0 +1,40 @@
+# This deploys application components (API, Worker)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cuegrowth-applications
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/itsrizkan/CueGrowth-Project.git
+    targetRevision: main
+    path: infra/kubernetes
+    
+    directory:
+      include: |
+        05-api-gateway.yaml
+        06-worker.yaml
+      recurse: false
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cuegrowth
+  
+  syncPolicy:
+    syncOptions:
+    - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+---

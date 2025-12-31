@@ -1,0 +1,40 @@
+# This deploys security components (Network Policies)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cuegrowth-security
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/itsrizkan/CueGrowth-Project.git
+    targetRevision: main
+    path: infra/kubernetes
+    
+    directory:
+      include: |
+        07-network-policies.yaml
+        08-ingress.yaml
+      recurse: false
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cuegrowth
+  
+  syncPolicy:
+    syncOptions:
+    - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+---
