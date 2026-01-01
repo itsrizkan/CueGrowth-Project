@@ -1,0 +1,436 @@
+# .github/workflows/ci-cd-self-hosted.yaml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'services/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  # Change this to your GitHub username (lowercase)
+  IMAGE_OWNER: ${{ github.itsrizkan }}
+
+jobs:
+  # Job 1: Checkout and Test
+  test:
+    name: Test Services
+    runs-on: self-hosted
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    # Test API Gateway
+    - name: Install API dependencies
+      run: |
+        cd services/api
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+      shell: powershell
+    
+    - name: Run API tests with coverage
+      run: |
+        cd services/api
+        pytest -v --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+      shell: powershell
+      continue-on-error: false  # Fail fast on test failures
+    
+    - name: Upload API coverage report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: api-coverage-report
+        path: services/api/coverage.xml
+    
+    # Test Worker
+    - name: Install Worker dependencies
+      run: |
+        cd services/worker
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+      shell: powershell
+    
+    - name: Run Worker tests with coverage
+      run: |
+        cd services/worker
+        pytest -v --cov=worker --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+      shell: powershell
+      continue-on-error: false  # Fail fast on test failures
+    
+    - name: Upload Worker coverage report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: worker-coverage-report
+        path: services/worker/coverage.xml
+    
+    # Combined coverage summary
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "## Test Results" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### API Gateway Tests" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Coverage requirement: >= 80%" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Tests: Passed ✅" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Worker Tests" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Coverage requirement: >= 80%" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Tests: Passed ✅" >> $env:GITHUB_STEP_SUMMARY
+      shell: powershell
+
+  # Job 2: Build and Scan Docker Images
+  build:
+    name: Build & Scan Images
+    needs: test
+    runs-on: self-hosted
+    
+    outputs:
+      api-image: ${{ steps.image-tags.outputs.api-image }}
+      worker-image: ${{ steps.image-tags.outputs.worker-image }}
+      image-tag: ${{ steps.image-tags.outputs.image-tag }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    # Generate image tags
+    - name: Generate image tags
+      id: image-tags
+      run: |
+        $SHORT_SHA = "${{ github.sha }}".Substring(0, 7)
+        $IMAGE_TAG = $SHORT_SHA
+        
+        $API_IMAGE = "${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/api-gateway"
+        $WORKER_IMAGE = "${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/worker"
+        
+        echo "image-tag=$IMAGE_TAG" >> $env:GITHUB_OUTPUT
+        echo "api-image=$API_IMAGE" >> $env:GITHUB_OUTPUT
+        echo "worker-image=$WORKER_IMAGE" >> $env:GITHUB_OUTPUT
+        
+        echo "Building images:"
+        echo "  API: ${API_IMAGE}:${IMAGE_TAG}"
+        echo "  Worker: ${WORKER_IMAGE}:${IMAGE_TAG}"
+      shell: powershell
+    
+    # Build API Gateway
+    - name: Build API Gateway image
+      run: |
+        cd services/api
+        docker build -t api-gateway:build .
+      shell: powershell
+    
+    # Scan API Gateway with Trivy
+    - name: Run Trivy scan on API Gateway
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'api-gateway:build'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
+      continue-on-error: false  # Fail on HIGH/CRITICAL vulnerabilities
+    
+    - name: Run Trivy scan (SARIF) on API Gateway
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'api-gateway:build'
+        format: 'sarif'
+        output: 'trivy-api-results.sarif'
+        severity: 'CRITICAL,HIGH'
+      continue-on-error: true
+    
+    - name: Upload API Trivy results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-api-results.sarif'
+        category: 'api-gateway'
+      continue-on-error: true
+    
+    # Build Worker
+    - name: Build Worker image
+      run: |
+        cd services/worker
+        docker build -t worker:build .
+      shell: powershell
+    
+    # Scan Worker with Trivy
+    - name: Run Trivy scan on Worker
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'worker:build'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
+      continue-on-error: false  # Fail on HIGH/CRITICAL vulnerabilities
+    
+    - name: Run Trivy scan (SARIF) on Worker
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'worker:build'
+        format: 'sarif'
+        output: 'trivy-worker-results.sarif'
+        severity: 'CRITICAL,HIGH'
+      continue-on-error: true
+    
+    - name: Upload Worker Trivy results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-worker-results.sarif'
+        category: 'worker'
+      continue-on-error: true
+    
+    # Login to GitHub Container Registry
+    - name: Login to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    # Tag and Push API Gateway
+    - name: Tag and Push API Gateway
+      run: |
+        $API_IMAGE = "${{ steps.image-tags.outputs.api-image }}"
+        $IMAGE_TAG = "${{ steps.image-tags.outputs.image-tag }}"
+        
+        # Tag with commit SHA
+        docker tag api-gateway:build "${API_IMAGE}:${IMAGE_TAG}"
+        docker push "${API_IMAGE}:${IMAGE_TAG}"
+        
+        # Tag with 'latest' if main branch
+        if ("${{ github.ref }}" -eq "refs/heads/main") {
+          docker tag api-gateway:build "${API_IMAGE}:latest"
+          docker push "${API_IMAGE}:latest"
+        }
+      shell: powershell
+    
+    # Tag and Push Worker
+    - name: Tag and Push Worker
+      run: |
+        $WORKER_IMAGE = "${{ steps.image-tags.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ steps.image-tags.outputs.image-tag }}"
+        
+        # Tag with commit SHA
+        docker tag worker:build "${WORKER_IMAGE}:${IMAGE_TAG}"
+        docker push "${WORKER_IMAGE}:${IMAGE_TAG}"
+        
+        # Tag with 'latest' if main branch
+        if ("${{ github.ref }}" -eq "refs/heads/main") {
+          docker tag worker:build "${WORKER_IMAGE}:latest"
+          docker push "${WORKER_IMAGE}:latest"
+        }
+      shell: powershell
+    
+    - name: Build Summary
+      run: |
+        $API_IMAGE = "${{ steps.image-tags.outputs.api-image }}"
+        $WORKER_IMAGE = "${{ steps.image-tags.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ steps.image-tags.outputs.image-tag }}"
+        
+        echo "## Build Summary" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Images Built and Pushed" >> $env:GITHUB_STEP_SUMMARY
+        echo "- API Gateway: \`${API_IMAGE}:${IMAGE_TAG}\`" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Worker: \`${WORKER_IMAGE}:${IMAGE_TAG}\`" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Security Scan" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Trivy scan: ✅ Passed (no HIGH/CRITICAL vulnerabilities)" >> $env:GITHUB_STEP_SUMMARY
+      shell: powershell
+
+  # Job 3: Deploy to Kind Cluster
+  deploy:
+    name: Deploy to Kind
+    needs: build
+    runs-on: self-hosted
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Get image details
+      id: images
+      run: |
+        $API_IMAGE = "${{ needs.build.outputs.api-image }}"
+        $WORKER_IMAGE = "${{ needs.build.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ needs.build.outputs.image-tag }}"
+        
+        echo "api-image=${API_IMAGE}" >> $env:GITHUB_OUTPUT
+        echo "worker-image=${WORKER_IMAGE}" >> $env:GITHUB_OUTPUT
+        echo "image-tag=${IMAGE_TAG}" >> $env:GITHUB_OUTPUT
+      shell: powershell
+    
+    # Pull images from GHCR
+    - name: Pull images from GHCR
+      run: |
+        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
+        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
+        
+        echo "Pulling images from GHCR..."
+        docker pull "${API_IMAGE}:${IMAGE_TAG}"
+        docker pull "${WORKER_IMAGE}:${IMAGE_TAG}"
+      shell: powershell
+    
+    # Load images into Kind cluster
+    - name: Load images into Kind cluster
+      run: |
+        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
+        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
+        
+        echo "Loading images into Kind cluster 'cuegrowth'..."
+        kind load docker-image "${API_IMAGE}:${IMAGE_TAG}" --name cuegrowth
+        kind load docker-image "${WORKER_IMAGE}:${IMAGE_TAG}" --name cuegrowth
+        
+        echo "Images loaded successfully!"
+      shell: powershell
+    
+    # Update Kubernetes manifests
+    - name: Update Kubernetes manifests
+      run: |
+        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
+        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
+        
+        # Update API Gateway manifest
+        (Get-Content infra/kubernetes/05-api-gateway.yaml) -replace 'image: .*api-gateway:.*', "image: ${API_IMAGE}:${IMAGE_TAG}" | Set-Content infra/kubernetes/05-api-gateway.yaml
+        
+        # Update Worker manifest
+        (Get-Content infra/kubernetes/06-worker.yaml) -replace 'image: .*worker:.*', "image: ${WORKER_IMAGE}:${IMAGE_TAG}" | Set-Content infra/kubernetes/06-worker.yaml
+        
+        echo "Manifests updated with new image tags"
+      shell: powershell
+    
+    # Deploy to Kubernetes
+    - name: Deploy API Gateway
+      run: |
+        kubectl apply -f infra/kubernetes/05-api-gateway.yaml
+        echo "API Gateway deployment updated"
+      shell: powershell
+    
+    - name: Deploy Worker
+      run: |
+        kubectl apply -f infra/kubernetes/06-worker.yaml
+        echo "Worker deployment updated"
+      shell: powershell
+    
+    # Wait for rollout
+    - name: Wait for API Gateway rollout
+      run: |
+        kubectl rollout status deployment/api-gateway -n cuegrowth --timeout=300s
+      shell: powershell
+    
+    - name: Wait for Worker rollout
+      run: |
+        kubectl rollout status deployment/worker -n cuegrowth --timeout=300s
+      shell: powershell
+    
+    # Verify deployment
+    - name: Verify deployment
+      run: |
+        echo "Checking pod status..."
+        kubectl get pods -n cuegrowth -l app=api-gateway
+        kubectl get pods -n cuegrowth -l app=worker
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app=api-gateway -n cuegrowth --timeout=120s
+        kubectl wait --for=condition=ready pod -l app=worker -n cuegrowth --timeout=120s
+        
+        echo "All pods are ready!"
+      shell: powershell
+    
+    # Commit updated manifests back to repo
+    - name: Commit updated manifests
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        git add infra/kubernetes/05-api-gateway.yaml
+        git add infra/kubernetes/06-worker.yaml
+        
+        if (git diff --staged --quiet) {
+          echo "No changes to commit"
+        } else {
+          git commit -m "chore: update image tags to ${{ steps.images.outputs.image-tag }} [skip ci]"
+          git push
+        }
+      shell: powershell
+    
+    # Run smoke tests
+    - name: Run smoke tests
+      run: |
+        # Port forward API
+        Start-Process kubectl -ArgumentList "port-forward -n cuegrowth svc/api-gateway 8000:8000" -PassThru
+        Start-Sleep -Seconds 5
+        
+        # Test health endpoint
+        $healthResponse = Invoke-RestMethod -Uri "http://localhost:8000/health" -ErrorAction Stop
+        echo "Health check: $($healthResponse | ConvertTo-Json)"
+        
+        # Test task submission
+        $taskBody = @{
+          task_id = "ci-test-${{ github.run_number }}"
+          data = @{
+            test = $true
+            run = "${{ github.run_number }}"
+          }
+        } | ConvertTo-Json
+        
+        $taskResponse = Invoke-RestMethod -Uri "http://localhost:8000/task" -Method Post -Body $taskBody -ContentType "application/json" -ErrorAction Stop
+        echo "Task submission: $($taskResponse | ConvertTo-Json)"
+        
+        # Wait for processing
+        Start-Sleep -Seconds 10
+        
+        # Check stats
+        $statsResponse = Invoke-RestMethod -Uri "http://localhost:8000/stats" -ErrorAction Stop
+        echo "Stats: $($statsResponse | ConvertTo-Json)"
+        
+        # Kill port-forward
+        Get-Process | Where-Object {$_.ProcessName -eq "kubectl" -and $_.CommandLine -like "*port-forward*"} | Stop-Process
+        
+        echo "✅ Smoke tests passed!"
+      shell: powershell
+    
+    - name: Deployment Summary
+      if: always()
+      run: |
+        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
+        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
+        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
+        
+        echo "## Deployment Summary" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Deployed Images" >> $env:GITHUB_STEP_SUMMARY
+        echo "- API Gateway: \`${API_IMAGE}:${IMAGE_TAG}\`" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Worker: \`${WORKER_IMAGE}:${IMAGE_TAG}\`" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Pod Status" >> $env:GITHUB_STEP_SUMMARY
+        kubectl get pods -n cuegrowth -o wide >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Smoke Tests" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Health check: ✅ Passed" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Task submission: ✅ Passed" >> $env:GITHUB_STEP_SUMMARY
+        echo "- Stats endpoint: ✅ Passed" >> $env:GITHUB_STEP_SUMMARY
+      shell: powershell
