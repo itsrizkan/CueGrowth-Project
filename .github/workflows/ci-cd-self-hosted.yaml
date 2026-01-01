@@ -205,7 +205,7 @@ jobs:
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+        password: ${{ secrets.GHCR_TOKEN }}
     
     # Tag and Push API Gateway
     - name: Tag and Push API Gateway
