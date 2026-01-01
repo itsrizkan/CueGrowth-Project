@@ -45,8 +45,8 @@ spec:
       terminationGracePeriodSeconds: 60  # Allow time to finish processing
       containers:
       - name: worker
-        image: cuegrowth/worker:latest
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/itsrizkan/worker:v1.0.0
+        imagePullPolicy: Always
         ports:
         - containerPort: 8001
           name: metrics

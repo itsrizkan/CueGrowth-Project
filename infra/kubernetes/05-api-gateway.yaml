@@ -44,8 +44,8 @@ spec:
         runAsNonRoot: true
       containers:
       - name: api
-        image: cuegrowth/api-gateway:latest
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/itsrizkan/api-gateway:v1.0.0
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
           name: http
