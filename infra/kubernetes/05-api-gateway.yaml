@@ -37,6 +37,10 @@ spec:
       labels:
         app: api-gateway
         version: v1
+      annotations:
+        # Istio sidecar exclusions for TCP services (NATS, Redis)
+        traffic.sidecar.istio.io/excludeInboundPorts: "4222,6222,6379"
+        traffic.sidecar.istio.io/excludeOutboundPorts: "4222,6222,6379"
     spec:
       securityContext:
         fsGroup: 1000
@@ -44,7 +48,7 @@ spec:
         runAsNonRoot: true
       containers:
       - name: api
-        image: ghcr.io/itsrizkan/api-gateway:v1.0.0
+        image: ghcr.io/itsrizkan/api-gateway:v1.0.3
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

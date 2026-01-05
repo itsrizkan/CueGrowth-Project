@@ -37,6 +37,10 @@ spec:
       labels:
         app: worker
         version: v1
+      annotations:
+        # Istio sidecar exclusions for TCP services (NATS, Redis)
+        traffic.sidecar.istio.io/excludeInboundPorts: "4222,6222,6379"
+        traffic.sidecar.istio.io/excludeOutboundPorts: "4222,6222,6379"
     spec:
       securityContext:
         fsGroup: 1000
@@ -58,9 +62,9 @@ spec:
               key: NATS_URL
         - name: NATS_USER
           valueFrom:
-            configMapKeyRef:
-              name: app-config
-              key: NATS_USER
+            secretKeyRef:
+              name: nats-secret
+              key: username
         - name: NATS_PASSWORD
           valueFrom:
             secretKeyRef:

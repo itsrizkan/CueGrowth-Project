@@ -1,0 +1,34 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: valkey-master-destination
+  namespace: cuegrowth
+spec:
+  host: valkey-master.cuegrowth.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: valkey-replica-0-destination
+  namespace: cuegrowth
+spec:
+  host: valkey-replica-0.cuegrowth.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: valkey-replica-1-destination
+  namespace: cuegrowth
+spec:
+  host: valkey-replica-1.cuegrowth.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE

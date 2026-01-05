@@ -1,0 +1,10 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: nats-destination
+  namespace: cuegrowth
+spec:
+  host: nats.cuegrowth.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE

@@ -1,0 +1,62 @@
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: nats-tcp
+  namespace: cuegrowth
+spec:
+  hosts:
+  - "nats.cuegrowth.svc.cluster.local"
+  ports:
+  - number: 4222
+    name: tcp-nats
+    protocol: TCP
+  location: MESH_INTERNAL
+  resolution: DNS
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: redis-master-tcp
+  namespace: cuegrowth
+spec:
+  hosts:
+  - "valkey-master.cuegrowth.svc.cluster.local"
+  ports:
+  - number: 6379
+    name: tcp-redis
+    protocol: TCP
+  location: MESH_INTERNAL
+  resolution: DNS
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: redis-replica-0-tcp
+  namespace: cuegrowth
+spec:
+  hosts:
+  - "valkey-replica-0.cuegrowth.svc.cluster.local"
+  ports:
+  - number: 6379
+    name: tcp-redis
+    protocol: TCP
+  location: MESH_INTERNAL
+  resolution: DNS
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: redis-replica-1-tcp
+  namespace: cuegrowth
+spec:
+  hosts:
+  - "valkey-replica-1.cuegrowth.svc.cluster.local"
+  ports:
+  - number: 6379
+    name: tcp-redis
+    protocol: TCP
+  location: MESH_INTERNAL
+  resolution: DNS

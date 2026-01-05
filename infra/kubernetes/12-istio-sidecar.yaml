@@ -1,0 +1,32 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: api-gateway-sidecar
+  namespace: cuegrowth
+spec:
+  workloadSelector:
+    labels:
+      app: api-gateway
+  egress:
+  - hosts:
+    - "cuegrowth/nats.cuegrowth.svc.cluster.local"
+    - "cuegrowth/valkey-master.cuegrowth.svc.cluster.local"
+    - "cuegrowth/valkey-replica-0.cuegrowth.svc.cluster.local"
+    - "cuegrowth/valkey-replica-1.cuegrowth.svc.cluster.local"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: worker-sidecar
+  namespace: cuegrowth
+spec:
+  workloadSelector:
+    labels:
+      app: worker
+  egress:
+  - hosts:
+    - "cuegrowth/nats.cuegrowth.svc.cluster.local"
+    - "cuegrowth/valkey-master.cuegrowth.svc.cluster.local"
+    - "cuegrowth/valkey-replica-0.cuegrowth.svc.cluster.local"
+    - "cuegrowth/valkey-replica-1.cuegrowth.svc.cluster.local"
