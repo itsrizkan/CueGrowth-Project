@@ -48,7 +48,7 @@ spec:
         runAsNonRoot: true
       containers:
       - name: api
-        image: ghcr.io/itsrizkan/api-gateway:v1.0.3
+        image: ghcr.io/itsrizkan/api-gateway:17f426e
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

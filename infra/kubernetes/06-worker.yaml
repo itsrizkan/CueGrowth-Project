@@ -49,7 +49,7 @@ spec:
       terminationGracePeriodSeconds: 60  # Allow time to finish processing
       containers:
       - name: worker
-        image: ghcr.io/itsrizkan/worker:v1.0.0
+        image: ghcr.io/itsrizkan/worker:17f426e
         imagePullPolicy: Always
         ports:
         - containerPort: 8001
