@@ -40,13 +40,14 @@ class Worker:
         self.redis_client = None
         self.subscription = None
         self.shutdown_handler = GracefulShutdown()
+        self.processing_count = 0  # <-- Added to satisfy test_worker_processing_count_starts_zero
         
         # Register signal handlers
         signal.signal(signal.SIGTERM, self.shutdown_handler.shutdown)
         signal.signal(signal.SIGINT, self.shutdown_handler.shutdown)
     
     async def connect(self):
-        """Establish connections to NATS and Valkey"""
+        """Establish connections to NATS and Redis"""
         nats_url = os.getenv("NATS_URL", "nats://nats:4222")
         nats_user = os.getenv("NATS_USER", "")
         nats_password = os.getenv("NATS_PASSWORD", "")
@@ -84,7 +85,7 @@ class Worker:
                     health_check_interval=30
                 )
                 self.redis_client.ping()
-                logger.info(f"Connected to Valkey at {redis_host}:{redis_port}")
+                logger.info(f"Connected to Redis at {redis_host}:{redis_port}")
                 return
             except Exception as e:
                 retry_count += 1
@@ -105,6 +106,7 @@ class Worker:
             # Simulate processing
             await asyncio.sleep(0.1)
             
+            # Save results to Redis
             result_key = f"result:{task_id}"
             result_data = {
                 "task_id": task_id,
@@ -112,12 +114,13 @@ class Worker:
                 "processed_at": time.time(),
                 "data": data.get('data', {})
             }
-            
             self.redis_client.setex(result_key, 3600, json.dumps(result_data))
             self.redis_client.incr("worker:processed_count")
             
+            # Update metrics
             tasks_processed.inc()
             processing_duration.observe(time.time() - start_time)
+            self.processing_count += 1  # <-- increment in-memory count
             
             logger.info(f"Task completed: {task_id} in {time.time() - start_time:.3f}s")
             await msg.ack()
