@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import asyncio
+from typing import Optional
 
 # ------------------------------
 # Logging configuration
@@ -30,8 +31,8 @@ task_published = Counter('tasks_published_total', 'Total tasks published to queu
 # ------------------------------
 # Global connections
 # ------------------------------
-nc: nats.aio.client.Client | None = None
-redis_client: redis.Redis | None = None
+nc: Optional[nats.aio.client.Client] = None
+redis_client: Optional[redis.Redis] = None
 
 # ------------------------------
 # Models
@@ -51,7 +52,7 @@ async def startup_event():
     nats_url = os.getenv("NATS_URL", "nats://nats.cuegrowth.svc.cluster.local:4222")
     nats_user = os.getenv("NATS_USER", "")
     nats_password = os.getenv("NATS_PASSWORD", "")
-    
+
     redis_host = os.getenv("REDIS_HOST", "valkey-master")
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
     redis_password = os.getenv("REDIS_PASSWORD", "")
