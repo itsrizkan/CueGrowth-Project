@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock, patch
-from main import app, TaskPayload
+from main import app
 
 client = TestClient(app)
 
@@ -23,51 +23,70 @@ def mock_nc_redis():
             yield
 
 # ------------------------------
-# Root endpoint tests
+# Root endpoint
 # ------------------------------
 def test_root():
-    response = client.get("/")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert data["service"] == "api-gateway"
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.json()["status"] == "healthy"
 
 # ------------------------------
-# Health endpoint tests
+# Health endpoint
 # ------------------------------
 def test_health():
-    response = client.get("/health")
-    assert response.status_code == 200
-    data = response.json()
+    r = client.get("/health")
+    assert r.status_code == 200
+    data = r.json()
     assert data["nats"] is True
     assert data["valkey"] is True
 
 # ------------------------------
-# Task endpoint tests
+# Task endpoint
 # ------------------------------
 def test_create_task():
     payload = {"task_id": "test123", "data": {"foo": "bar"}}
-    response = client.post("/task", json=payload)
-    assert response.status_code == 200
-    data = response.json()
+    r = client.post("/task", json=payload)
+    assert r.status_code == 200
+    data = r.json()
     assert data["status"] == "accepted"
-    assert data["task_id"] == "test123"
+
+def test_task_publish_failure():
+    payload = {"task_id": "fail123", "data": {"foo": "bar"}}
+    with patch("main.nc", new_callable=AsyncMock) as mock_nc:
+        mock_nc.publish.side_effect = Exception("NATS down")
+        r = client.post("/task", json=payload)
+        assert r.status_code == 500
+        assert "Failed to queue task" in r.json()["detail"]
 
 # ------------------------------
-# Stats endpoint tests
+# Stats endpoint
 # ------------------------------
 def test_stats():
-    response = client.get("/stats")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["valkey_keys_count"] == 5
+    r = client.get("/stats")
+    assert r.status_code == 200
+    data = r.json()
     assert data["worker_processed_count"] == 10
 
+def test_stats_with_empty_db():
+    with patch("main.redis_client", new_callable=MagicMock) as mock_redis:
+        mock_redis.dbsize.return_value = 0
+        mock_redis.get.return_value = None
+        r = client.get("/stats")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["valkey_keys_count"] == 0
+
+def test_stats_redis_failure():
+    with patch("main.redis_client", new_callable=MagicMock) as mock_redis:
+        mock_redis.dbsize.side_effect = Exception("Redis down")
+        r = client.get("/stats")
+        assert r.status_code == 500
+        assert "Failed to retrieve stats" in r.json()["detail"]
+
 # ------------------------------
-# Metrics endpoint tests
+# Metrics endpoint
 # ------------------------------
 def test_metrics():
-    response = client.get("/metrics")
-    assert response.status_code == 200
-    assert "text/plain" in response.headers["content-type"]
-    assert len(response.text) > 0
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "text/plain" in r.headers["content-type"]

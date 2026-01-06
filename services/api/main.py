@@ -142,7 +142,7 @@ async def health():
 async def create_task(task: TaskPayload):
     request_counter.labels(endpoint='/task', method='POST').inc()
     try:
-        message = json.dumps(task.dict())
+        message = json.dumps(task.model_dump())
         await nc.publish("tasks", message.encode())
         task_published.inc()
         logger.info(f"Task published: {task.task_id}")
