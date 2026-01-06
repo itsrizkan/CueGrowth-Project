@@ -57,9 +57,7 @@ async def startup_event():
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
     redis_password = os.getenv("REDIS_PASSWORD", "")
 
-    # ------------------------------
-    # Connect to NATS with retries
-    # ------------------------------
+    # Connect to NATS
     for attempt in range(5):
         try:
             if nats_user and nats_password:
@@ -83,9 +81,7 @@ async def startup_event():
         logger.error("❌ Failed to connect to NATS after 5 attempts")
         raise RuntimeError("Failed to connect to NATS")
 
-    # ------------------------------
-    # Connect to Redis / Valkey
-    # ------------------------------
+    # Connect to Redis
     try:
         redis_client = redis.Redis(
             host=redis_host,
@@ -116,7 +112,7 @@ async def shutdown_event():
         logger.info("Redis connection closed")
 
 # ------------------------------
-# Health / Root endpoints
+# Root / health endpoints
 # ------------------------------
 @app.get("/")
 async def root():
