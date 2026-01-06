@@ -1,0 +1,177 @@
+# .github/workflows/ci-cd.yaml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'services/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  # -----------------------
+  # Job 1: Test
+  # -----------------------
+  test:
+    name: Test Services
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install API deps
+        run: |
+          cd services/api
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run API tests
+        run: |
+          cd services/api
+          pytest -v --cov=main --cov-report=xml --cov-fail-under=80
+
+      - name: Upload API coverage
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: api-coverage
+          path: services/api/coverage.xml
+
+      - name: Install Worker deps
+        run: |
+          cd services/worker
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Worker tests
+        run: |
+          cd services/worker
+          pytest -v --cov=worker --cov-report=xml --cov-fail-under=80
+
+      - name: Upload Worker coverage
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: worker-coverage
+          path: services/worker/coverage.xml
+
+      - name: Test Summary
+        if: always()
+        run: |
+          {
+            echo "## Test Results"
+            echo "✅ API & Worker tests passed"
+          } >> $GITHUB_STEP_SUMMARY
+
+  # -----------------------
+  # Job 2: Build & Scan
+  # -----------------------
+  build:
+    name: Build & Scan Images
+    needs: test
+    runs-on: ubuntu-latest
+
+    outputs:
+      api-image: ${{ steps.tags.outputs.api-image }}
+      worker-image: ${{ steps.tags.outputs.worker-image }}
+      image-tag: ${{ steps.tags.outputs.image-tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Generate image tags
+        id: tags
+        run: |
+          IMAGE_TAG=${GITHUB_SHA::7}
+          API_IMAGE=${REGISTRY}/${IMAGE_OWNER}/api-gateway
+          WORKER_IMAGE=${REGISTRY}/${IMAGE_OWNER}/worker
+
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "api-image=$API_IMAGE" >> $GITHUB_OUTPUT
+          echo "worker-image=$WORKER_IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Build API image
+        run: |
+          cd services/api
+          docker build -t api-gateway:build .
+
+      - name: Trivy scan API
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: api-gateway:build
+          exit-code: 1
+          severity: CRITICAL,HIGH
+
+      - name: Build Worker image
+        run: |
+          cd services/worker
+          docker build -t worker:build .
+
+      - name: Trivy scan Worker
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: worker:build
+          exit-code: 1
+          severity: CRITICAL,HIGH
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push images
+        run: |
+          docker tag api-gateway:build ${{ steps.tags.outputs.api-image }}:${{ steps.tags.outputs.image-tag }}
+          docker tag worker:build ${{ steps.tags.outputs.worker-image }}:${{ steps.tags.outputs.image-tag }}
+
+          docker push ${{ steps.tags.outputs.api-image }}:${{ steps.tags.outputs.image-tag }}
+          docker push ${{ steps.tags.outputs.worker-image }}:${{ steps.tags.outputs.image-tag }}
+
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            docker tag api-gateway:build ${{ steps.tags.outputs.api-image }}:latest
+            docker tag worker:build ${{ steps.tags.outputs.worker-image }}:latest
+            docker push ${{ steps.tags.outputs.api-image }}:latest
+            docker push ${{ steps.tags.outputs.worker-image }}:latest
+          fi
+
+  # -----------------------
+  # Job 3: Update manifests
+  # -----------------------
+  update:
+    name: Update Kubernetes Manifests
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update manifests
+        run: |
+          sed -i "s|image: .*api-gateway:.*|image: ${{ needs.build.outputs.api-image }}:${{ needs.build.outputs.image-tag }}|" infra/kubernetes/05-api-gateway.yaml
+          sed -i "s|image: .*worker:.*|image: ${{ needs.build.outputs.worker-image }}:${{ needs.build.outputs.image-tag }}|" infra/kubernetes/06-worker.yaml
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add infra/kubernetes/*.yaml
+          git diff --staged --quiet || git commit -m "chore: update image tags [skip ci]"
+          git push

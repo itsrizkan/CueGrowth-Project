@@ -257,9 +257,9 @@ jobs:
         echo "- Trivy scan: ✅ Passed (no HIGH/CRITICAL vulnerabilities)" >> $env:GITHUB_STEP_SUMMARY
       shell: powershell
 
-  # Job 3: Deploy to Kind Cluster
-  deploy:
-    name: Deploy to Kind
+  # Job 3: Update Kubernetes Manifests
+  update:
+    name: Update Kubernetes manifests
     needs: build
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
@@ -267,44 +267,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
-    - name: Get image details
-      id: images
-      run: |
-        $API_IMAGE = "${{ needs.build.outputs.api-image }}"
-        $WORKER_IMAGE = "${{ needs.build.outputs.worker-image }}"
-        $IMAGE_TAG = "${{ needs.build.outputs.image-tag }}"
-        
-        echo "api-image=${API_IMAGE}" >> $env:GITHUB_OUTPUT
-        echo "worker-image=${WORKER_IMAGE}" >> $env:GITHUB_OUTPUT
-        echo "image-tag=${IMAGE_TAG}" >> $env:GITHUB_OUTPUT
-      shell: powershell
-    
-    # Pull images from GHCR
-    - name: Pull images from GHCR
-      run: |
-        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
-        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
-        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
-        
-        echo "Pulling images from GHCR..."
-        docker pull "${API_IMAGE}:${IMAGE_TAG}"
-        docker pull "${WORKER_IMAGE}:${IMAGE_TAG}"
-      shell: powershell
-    
-    # Load images into Kind cluster
-    - name: Load images into Kind cluster
-      run: |
-        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
-        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
-        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
-        
-        echo "Loading images into Kind cluster 'cuegrowth'..."
-        kind load docker-image "${API_IMAGE}:${IMAGE_TAG}" --name cuegrowth
-        kind load docker-image "${WORKER_IMAGE}:${IMAGE_TAG}" --name cuegrowth
-        
-        echo "Images loaded successfully!"
-      shell: powershell
     
     # Update Kubernetes manifests
     - name: Update Kubernetes manifests
@@ -322,44 +284,6 @@ jobs:
         echo "Manifests updated with new image tags"
       shell: powershell
     
-    # Deploy to Kubernetes
-    - name: Deploy API Gateway
-      run: |
-        kubectl apply -f infra/kubernetes/05-api-gateway.yaml
-        echo "API Gateway deployment updated"
-      shell: powershell
-    
-    - name: Deploy Worker
-      run: |
-        kubectl apply -f infra/kubernetes/06-worker.yaml
-        echo "Worker deployment updated"
-      shell: powershell
-    
-    # Wait for rollout
-    - name: Wait for API Gateway rollout
-      run: |
-        kubectl rollout status deployment/api-gateway -n cuegrowth --timeout=300s
-      shell: powershell
-    
-    - name: Wait for Worker rollout
-      run: |
-        kubectl rollout status deployment/worker -n cuegrowth --timeout=300s
-      shell: powershell
-    
-    # Verify deployment
-    - name: Verify deployment
-      run: |
-        echo "Checking pod status..."
-        kubectl get pods -n cuegrowth -l app=api-gateway
-        kubectl get pods -n cuegrowth -l app=worker
-        
-        # Wait for pods to be ready
-        kubectl wait --for=condition=ready pod -l app=api-gateway -n cuegrowth --timeout=120s
-        kubectl wait --for=condition=ready pod -l app=worker -n cuegrowth --timeout=120s
-        
-        echo "All pods are ready!"
-      shell: powershell
-    
     # Commit updated manifests back to repo
     - name: Commit updated manifests
       run: |
@@ -375,62 +299,4 @@ jobs:
           git commit -m "chore: update image tags to ${{ steps.images.outputs.image-tag }} [skip ci]"
           git push
         }
-      shell: powershell
-    
-    # Run smoke tests
-    - name: Run smoke tests
-      run: |
-        # Port forward API
-        Start-Process kubectl -ArgumentList "port-forward -n cuegrowth svc/api-gateway 8000:8000" -PassThru
-        Start-Sleep -Seconds 5
-        
-        # Test health endpoint
-        $healthResponse = Invoke-RestMethod -Uri "http://localhost:8000/health" -ErrorAction Stop
-        echo "Health check: $($healthResponse | ConvertTo-Json)"
-        
-        # Test task submission
-        $taskBody = @{
-          task_id = "ci-test-${{ github.run_number }}"
-          data = @{
-            test = $true
-            run = "${{ github.run_number }}"
-          }
-        } | ConvertTo-Json
-        
-        $taskResponse = Invoke-RestMethod -Uri "http://localhost:8000/task" -Method Post -Body $taskBody -ContentType "application/json" -ErrorAction Stop
-        echo "Task submission: $($taskResponse | ConvertTo-Json)"
-        
-        # Wait for processing
-        Start-Sleep -Seconds 10
-        
-        # Check stats
-        $statsResponse = Invoke-RestMethod -Uri "http://localhost:8000/stats" -ErrorAction Stop
-        echo "Stats: $($statsResponse | ConvertTo-Json)"
-        
-        # Kill port-forward
-        Get-Process | Where-Object {$_.ProcessName -eq "kubectl" -and $_.CommandLine -like "*port-forward*"} | Stop-Process
-        
-        echo "✅ Smoke tests passed!"
-      shell: powershell
-    
-    - name: Deployment Summary
-      if: always()
-      run: |
-        $API_IMAGE = "${{ steps.images.outputs.api-image }}"
-        $WORKER_IMAGE = "${{ steps.images.outputs.worker-image }}"
-        $IMAGE_TAG = "${{ steps.images.outputs.image-tag }}"
-        
-        echo "## Deployment Summary" >> $env:GITHUB_STEP_SUMMARY
-        echo "" >> $env:GITHUB_STEP_SUMMARY
-        echo "### Deployed Images" >> $env:GITHUB_STEP_SUMMARY
-        echo "- API Gateway: \`${API_IMAGE}:${IMAGE_TAG}\`" >> $env:GITHUB_STEP_SUMMARY
-        echo "- Worker: \`${WORKER_IMAGE}:${IMAGE_TAG}\`" >> $env:GITHUB_STEP_SUMMARY
-        echo "" >> $env:GITHUB_STEP_SUMMARY
-        echo "### Pod Status" >> $env:GITHUB_STEP_SUMMARY
-        kubectl get pods -n cuegrowth -o wide >> $env:GITHUB_STEP_SUMMARY
-        echo "" >> $env:GITHUB_STEP_SUMMARY
-        echo "### Smoke Tests" >> $env:GITHUB_STEP_SUMMARY
-        echo "- Health check: ✅ Passed" >> $env:GITHUB_STEP_SUMMARY
-        echo "- Task submission: ✅ Passed" >> $env:GITHUB_STEP_SUMMARY
-        echo "- Stats endpoint: ✅ Passed" >> $env:GITHUB_STEP_SUMMARY
       shell: powershell
