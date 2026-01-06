@@ -1,117 +1,162 @@
-# services/api/test_api.py
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, MagicMock, patch
+# main.py
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from prometheus_client import Counter, Histogram, generate_latest
+from fastapi.responses import Response
+import nats
+import redis
+import os
 import json
+import logging
+import asyncio
+from typing import Optional
 
-# Import app and TaskPayload
-from main import app, TaskPayload
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ------------------------------
-# Test client
-# ------------------------------
-client = TestClient(app)
+# Prometheus metrics
+request_counter = Counter('api_requests_total', 'Total API requests', ['endpoint', 'method'])
+request_duration = Histogram('api_request_duration_seconds', 'Request duration', ['endpoint'])
+task_published = Counter('tasks_published_total', 'Total tasks published to queue')
 
-# ------------------------------
-# Fixtures to mock external dependencies
-# ------------------------------
-@pytest.fixture(autouse=True)
-def mock_nc_redis():
-    """Mock NATS and Redis globally for all tests"""
-    with patch("main.nc", new_callable=AsyncMock) as mock_nc:
-        with patch("main.redis_client", new_callable=MagicMock) as mock_redis:
-            # NATS publish mock
-            mock_nc.publish = AsyncMock()
-            # Redis mock
-            mock_redis.ping.return_value = True
-            mock_redis.dbsize.return_value = 10
-            mock_redis.get.side_effect = lambda key: {
-                "worker:processed_count": "5",
-                "queue:backlog": "2",
-                "api:tasks_published": "5"
-            }.get(key, "0")
-            yield
 
-# ------------------------------
-# Root endpoint tests
-# ------------------------------
-def test_root():
-    response = client.get("/")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert data["service"] == "api-gateway"
+# Task model
+class TaskPayload(BaseModel):
+    task_id: str
+    data: dict
 
-# ------------------------------
-# Health endpoint tests
-# ------------------------------
-def test_health():
-    response = client.get("/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert data["nats"] is True
-    assert data["valkey"] is True
 
-# ------------------------------
-# Task endpoint tests
-# ------------------------------
-def test_create_task():
-    payload = {"task_id": "task-1", "data": {"key": "value"}}
-    response = client.post("/task", json=payload)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "accepted"
-    assert data["task_id"] == "task-1"
-    assert "message" in data
+def create_app() -> FastAPI:
+    """Factory function to create FastAPI app"""
+    app = FastAPI(title="CueGrowth API Gateway")
 
-def test_task_invalid_payload():
-    # Missing task_id
-    payload = {"data": {"key": "value"}}
-    response = client.post("/task", json=payload)
-    assert response.status_code == 422
+    # Global connections
+    nc: Optional[nats.aio.client.Client] = None
+    redis_client: Optional[redis.Redis] = None
 
-    # Missing data
-    payload = {"task_id": "task-2"}
-    response = client.post("/task", json=payload)
-    assert response.status_code == 422
+    # ------------------------------
+    # Lifespan for startup/shutdown
+    # ------------------------------
+    @app.on_event("startup")
+    async def startup_event():
+        nonlocal nc, redis_client
+        nats_url = os.getenv("NATS_URL", "nats://nats.cuegrowth.svc.cluster.local:4222")
+        nats_user = os.getenv("NATS_USER", "")
+        nats_password = os.getenv("NATS_PASSWORD", "")
 
-def test_task_publish_failure():
-    # Simulate NATS publish failure
-    from main import nc
-    nc.publish.side_effect = Exception("NATS down")
+        redis_host = os.getenv("REDIS_HOST", "valkey-master")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_password = os.getenv("REDIS_PASSWORD", "")
 
-    payload = {"task_id": "task-3", "data": {"key": "value"}}
-    response = client.post("/task", json=payload)
-    assert response.status_code == 500
-    assert "Failed to queue task" in response.json()["detail"]
+        # NATS connect
+        for attempt in range(5):
+            try:
+                if nats_user and nats_password:
+                    nc = await nats.connect(
+                        servers=[nats_url], user=nats_user, password=nats_password, connect_timeout=5
+                    )
+                else:
+                    nc = await nats.connect(servers=[nats_url], connect_timeout=5)
+                logger.info(f"✅ Connected to NATS at {nats_url}")
+                break
+            except Exception as e:
+                logger.warning(f"NATS connection attempt {attempt + 1}/5 failed: {e}")
+                await asyncio.sleep(2)
+        else:
+            logger.error("❌ Failed to connect to NATS")
+            raise RuntimeError("Failed to connect to NATS")
 
-# ------------------------------
-# Stats endpoint tests
-# ------------------------------
-def test_stats():
-    response = client.get("/stats")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["valkey_keys_count"] == 10
-    assert data["queue_backlog"] == 2
-    assert data["worker_processed_count"] == 5
-    assert data["total_tasks_published"] == 5
-    assert data["processing_rate"] == "100.00%"
+        # Redis connect
+        try:
+            redis_client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password if redis_password else None,
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
+            redis_client.ping()
+            logger.info(f"✅ Connected to Redis at {redis_host}:{redis_port}")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Redis: {e}")
+            raise RuntimeError("Failed to connect to Redis")
 
-def test_stats_redis_failure():
-    from main import redis_client
-    redis_client.dbsize.side_effect = Exception("Redis down")
-    response = client.get("/stats")
-    assert response.status_code == 500
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        nonlocal nc, redis_client
+        if nc:
+            await nc.close()
+            logger.info("NATS connection closed")
+        if redis_client:
+            redis_client.close()
+            logger.info("Redis connection closed")
 
-# ------------------------------
-# Metrics endpoint tests
-# ------------------------------
-def test_metrics():
-    response = client.get("/metrics")
-    assert response.status_code == 200
-    assert "text/plain" in response.headers["content-type"]
-    # Check that Prometheus metric names are present
-    assert "api_requests_total" in response.text
-    assert "tasks_published_total" in response.text
+    # ------------------------------
+    # Endpoints
+    # ------------------------------
+    @app.get("/")
+    async def root():
+        return {"status": "healthy", "service": "api-gateway"}
+
+    @app.get("/health")
+    async def health():
+        health_status = {"status": "healthy", "nats": False, "valkey": False}
+        try:
+            if nc and nc.is_connected:
+                health_status["nats"] = True
+            if redis_client:
+                redis_client.ping()
+                health_status["valkey"] = True
+            if health_status["nats"] and health_status["valkey"]:
+                return health_status
+            else:
+                raise HTTPException(status_code=503, detail=health_status)
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            raise HTTPException(status_code=503, detail=str(e))
+
+    @app.post("/task")
+    async def create_task(task: TaskPayload):
+        request_counter.labels(endpoint='/task', method='POST').inc()
+        try:
+            message = json.dumps(task.model_dump())
+            await nc.publish("tasks", message.encode())
+            task_published.inc()
+            logger.info(f"Task published: {task.task_id}")
+            return {"status": "accepted", "task_id": task.task_id, "message": "Task queued for processing"}
+        except Exception as e:
+            logger.error(f"Failed to publish task: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
+
+    @app.get("/stats")
+    async def get_stats():
+        request_counter.labels(endpoint='/stats', method='GET').inc()
+        try:
+            valkey_keys_count = redis_client.dbsize() if redis_client else 0
+            processed_count = int(redis_client.get("worker:processed_count") or 0) if redis_client else 0
+            queue_backlog = int(redis_client.get("queue:backlog") or 0) if redis_client else 0
+            total_published = int(redis_client.get("api:tasks_published") or 0) if redis_client else 0
+            return {
+                "valkey_keys_count": valkey_keys_count,
+                "queue_backlog": queue_backlog,
+                "worker_processed_count": processed_count,
+                "total_tasks_published": total_published,
+                "processing_rate": f"{(processed_count / max(total_published, 1) * 100):.2f}%"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get stats: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve stats: {str(e)}")
+
+    @app.get("/metrics")
+    async def metrics():
+        return Response(content=generate_latest(), media_type="text/plain")
+
+    return app
+
+
+# Create app instance for uvicorn
+app = create_app()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
