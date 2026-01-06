@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from prometheus_client import Counter, Histogram, generate_latest
@@ -11,35 +10,38 @@ import logging
 import asyncio
 from typing import Optional
 
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Prometheus metrics
+# Metrics
 request_counter = Counter('api_requests_total', 'Total API requests', ['endpoint', 'method'])
 request_duration = Histogram('api_request_duration_seconds', 'Request duration', ['endpoint'])
 task_published = Counter('tasks_published_total', 'Total tasks published to queue')
 
-
-# Task model
+# Models
 class TaskPayload(BaseModel):
     task_id: str
     data: dict
 
-
+# -------------------
+# App factory
+# -------------------
 def create_app() -> FastAPI:
-    """Factory function to create FastAPI app"""
     app = FastAPI(title="CueGrowth API Gateway")
 
     # Global connections
     nc: Optional[nats.aio.client.Client] = None
     redis_client: Optional[redis.Redis] = None
 
-    # ------------------------------
-    # Lifespan for startup/shutdown
-    # ------------------------------
+    # -------------------
+    # Startup
+    # -------------------
     @app.on_event("startup")
     async def startup_event():
         nonlocal nc, redis_client
+
+        # Config
         nats_url = os.getenv("NATS_URL", "nats://nats.cuegrowth.svc.cluster.local:4222")
         nats_user = os.getenv("NATS_USER", "")
         nats_password = os.getenv("NATS_PASSWORD", "")
@@ -48,12 +50,15 @@ def create_app() -> FastAPI:
         redis_port = int(os.getenv("REDIS_PORT", "6379"))
         redis_password = os.getenv("REDIS_PASSWORD", "")
 
-        # NATS connect
+        # NATS
         for attempt in range(5):
             try:
                 if nats_user and nats_password:
                     nc = await nats.connect(
-                        servers=[nats_url], user=nats_user, password=nats_password, connect_timeout=5
+                        servers=[nats_url],
+                        user=nats_user,
+                        password=nats_password,
+                        connect_timeout=5
                     )
                 else:
                     nc = await nats.connect(servers=[nats_url], connect_timeout=5)
@@ -66,14 +71,14 @@ def create_app() -> FastAPI:
             logger.error("❌ Failed to connect to NATS")
             raise RuntimeError("Failed to connect to NATS")
 
-        # Redis connect
+        # Redis
         try:
             redis_client = redis.Redis(
                 host=redis_host,
                 port=redis_port,
                 password=redis_password if redis_password else None,
                 decode_responses=True,
-                socket_connect_timeout=5,
+                socket_connect_timeout=5
             )
             redis_client.ping()
             logger.info(f"✅ Connected to Redis at {redis_host}:{redis_port}")
@@ -81,52 +86,49 @@ def create_app() -> FastAPI:
             logger.error(f"❌ Failed to connect to Redis: {e}")
             raise RuntimeError("Failed to connect to Redis")
 
+    # -------------------
+    # Shutdown
+    # -------------------
     @app.on_event("shutdown")
     async def shutdown_event():
         nonlocal nc, redis_client
         if nc:
             await nc.close()
-            logger.info("NATS connection closed")
         if redis_client:
             redis_client.close()
-            logger.info("Redis connection closed")
 
-    # ------------------------------
+    # -------------------
     # Endpoints
-    # ------------------------------
+    # -------------------
     @app.get("/")
     async def root():
         return {"status": "healthy", "service": "api-gateway"}
 
     @app.get("/health")
     async def health():
-        health_status = {"status": "healthy", "nats": False, "valkey": False}
+        status = {"status": "healthy", "nats": False, "valkey": False}
         try:
             if nc and nc.is_connected:
-                health_status["nats"] = True
+                status["nats"] = True
             if redis_client:
                 redis_client.ping()
-                health_status["valkey"] = True
-            if health_status["nats"] and health_status["valkey"]:
-                return health_status
-            else:
-                raise HTTPException(status_code=503, detail=health_status)
+                status["valkey"] = True
+            if status["nats"] and status["valkey"]:
+                return status
+            raise HTTPException(status_code=503, detail=status)
         except Exception as e:
-            logger.error(f"Health check failed: {e}")
             raise HTTPException(status_code=503, detail=str(e))
 
     @app.post("/task")
     async def create_task(task: TaskPayload):
         request_counter.labels(endpoint='/task', method='POST').inc()
         try:
-            message = json.dumps(task.model_dump())
+            message = json.dumps(task.model_dump())  # Pydantic v2
             await nc.publish("tasks", message.encode())
             task_published.inc()
-            logger.info(f"Task published: {task.task_id}")
-            return {"status": "accepted", "task_id": task.task_id, "message": "Task queued for processing"}
+            return {"status": "accepted", "task_id": task.task_id}
         except Exception as e:
-            logger.error(f"Failed to publish task: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/stats")
     async def get_stats():
@@ -144,17 +146,22 @@ def create_app() -> FastAPI:
                 "processing_rate": f"{(processed_count / max(total_published, 1) * 100):.2f}%"
             }
         except Exception as e:
-            logger.error(f"Failed to get stats: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to retrieve stats: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/metrics")
     async def metrics():
         return Response(content=generate_latest(), media_type="text/plain")
 
+    # Store connections for testing
+    app.state.nc = nc
+    app.state.redis = redis_client
+
     return app
 
 
-# Create app instance for uvicorn
+# -------------------
+# Run server
+# -------------------
 app = create_app()
 
 if __name__ == "__main__":
