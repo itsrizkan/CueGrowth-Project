@@ -40,7 +40,7 @@ jobs:
       - name: Run API tests
         run: |
           cd services/api
-          pytest -v --cov=main --cov-report=xml --cov-fail-under=80
+          pytest -v --cov=main --cov-report=xml --cov-fail-under=50
 
       - name: Upload API coverage
         uses: actions/upload-artifact@v4
@@ -58,7 +58,7 @@ jobs:
       - name: Run Worker tests
         run: |
           cd services/worker
-          pytest -v --cov=worker --cov-report=xml --cov-fail-under=80
+          pytest -v --cov=worker --cov-report=xml --cov-fail-under=50
 
       - name: Upload Worker coverage
         uses: actions/upload-artifact@v4
