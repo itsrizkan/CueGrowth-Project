@@ -61,7 +61,7 @@ jobs:
           pytest -v --cov=worker --cov-report=xml --cov-fail-under=80
 
       - name: Upload Worker coverage
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: worker-coverage
